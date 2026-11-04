@@ -1,0 +1,39 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Core RDP Settings
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "SecurityLayer" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User with Fixed Password
+        shell: pwsh
+        run: |
+          $username = "rdp"
+          $password = "jutt5566@"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          $existingUser = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+
+          if ($existingUser) {
+              Set-LocalUser -Name $username -Password $securePass
