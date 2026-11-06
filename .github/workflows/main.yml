@@ -9,132 +9,75 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Setup RDP
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
-
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Fixed Password
-        shell: pwsh
-        run: |
-          $username = "RDP"
           $password = "jutt5566@"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          $existingUser = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
-
-          if ($existingUser) {
-              Set-LocalUser -Name $username -Password $securePass
-          } else {
-              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
-          }
-
-          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
-
-          "RDP_USERNAME=$username" >> $env:GITHUB_ENV
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) { Set-LocalUser -Name "RDP" -Password $securePass } else { New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires }
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+          "RDP_USERNAME=RDP" >> $env:GITHUB_ENV
           "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-          if (-not (Get-LocalUser -Name $username)) {
-              throw "RDP user creation failed"
-          }
-
-          Write-Host "RDP user configured successfully."
 
       - name: Install Only 3 Apps - Chrome, GoLogin, AdsPower
         shell: pwsh
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           Write-Host "Installing Chrome..."
           choco install googlechrome -y --no-progress
 
-          Write-Host "Installing GoLogin..."
-          try {
-            $goUrl = "https://dl.gologin.com/gologin.exe"
-            Invoke-WebRequest -Uri $goUrl -OutFile "$env:TEMP\GoLogin.exe" -UseBasicParsing
-            Start-Process "$env:TEMP\GoLogin.exe" -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
-            Write-Host "GoLogin Installed"
-          } catch {
-            Write-Host "Direct GoLogin failed, trying winget..."
-            winget install --id=GoLogin.GoLogin -e --accept-source-agreements --accept-package-agreements --silent
-          }
-
           Write-Host "Installing AdsPower..."
-          try {
-            winget install --id=AdsPower.AdsPower -e --accept-source-agreements --accept-package-agreements --silent
-          } catch {
-            Write-Host "Winget AdsPower failed, trying direct download..."
-            $adsUrl = "https://download.adspower.com/AdsPower-Setup.exe"
-            Invoke-WebRequest -Uri $adsUrl -OutFile "$env:TEMP\AdsPower.exe" -UseBasicParsing
-            Start-Process "$env:TEMP\AdsPower.exe" -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
-          }
-          Write-Host "Only 3 Apps Installed Successfully"
+          try { winget install --id=AdsPower.AdsPower -e --accept-source-agreements --accept-package-agreements --silent } catch { Write-Host "AdsPower winget failed" }
+
+          Write-Host "Downloading GoLogin to Desktop..."
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          Invoke-WebRequest -Uri "https://dl.gologin.com/gologin.exe" -OutFile "$desktop\GoLogin.exe" -UseBasicParsing
+          Write-Host "Installing GoLogin..."
+          Start-Process "$desktop\GoLogin.exe" -ArgumentList "/S" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 25
+          Write-Host "Done"
+
+      - name: Clean Desktop - Remove Fazool Software Shortcuts
+        shell: pwsh
+        run: |
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          $publicDesktop = "$env:PUBLIC\Desktop"
+
+          # Fazool icons delete karo
+          Get-ChildItem "$desktop\*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Unity|Firefox|Edge|R 4|Visual Studio|Git|PowerShell" } | Remove-Item -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "$publicDesktop\*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Unity|Firefox|Edge|R 4|Visual Studio|Git|PowerShell" } | Remove-Item -Force -ErrorAction SilentlyContinue
+
+          # Unity Hub, Firefox, R ko uninstall karne ki koshish
+          winget uninstall --id=Unity.UnityHub -e --silent --accept-source-agreements --accept-package-agreements -ErrorAction SilentlyContinue
+          winget uninstall --id=Mozilla.Firefox -e --silent --accept-source-agreements --accept-package-agreements -ErrorAction SilentlyContinue
+
+          Write-Host "Desktop Cleaned - Sirf Chrome, GoLogin, AdsPower Rahenge"
 
       - name: Install Tailscale
         shell: pwsh
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-
-      - name: Establish Tailscale Connection
-        shell: pwsh
-        run: |
+          Invoke-WebRequest -Uri $tsUrl -OutFile "$env:TEMP\tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\tailscale.msi`"", "/quiet", "/norestart" -Wait
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-
           $tsIP = $null
           $retries = 0
-
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-
-          if (-not $tsIP) {
-              throw "Tailscale IP not assigned. Exiting."
-          }
-
-          $tsIP = ($tsIP | Select-Object -First 1).Trim()
+          while (-not $tsIP -and $retries -lt 10) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep -Seconds 3; $retries++ }
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
-      - name: Verify RDP Accessibility
-        shell: pwsh
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-
-          if (-not $testResult.TcpTestSucceeded) {
-              throw "TCP connection to RDP port 3389 failed"
-          }
-
-          Write-Host "TCP connectivity successful!"
 
       - name: Maintain Connection
         shell: pwsh
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: $env:RDP_USERNAME"
+          Write-Host "Username: RDP"
           Write-Host "Password: $env:RDP_PASSWORD"
           Write-Host "==================`n"
-
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use workflow cancellation to terminate"
-              Start-Sleep -Seconds 300
-          }
+          while ($true) { Write-Host "[$(Get-Date)] RDP Active"; Start-Sleep -Seconds 300 }
