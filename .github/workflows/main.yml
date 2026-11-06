@@ -1,83 +1,50 @@
-name: RDP
 
-on:
-  workflow_dispatch:
-
-jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 360
-
-    steps:
-      - name: Setup RDP
+      - name: Install Only Chrome, GoLogin and AdsPower
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
+          $ErrorActionPreference = "Stop"
 
-          $password = "jutt5566@"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) { Set-LocalUser -Name "RDP" -Password $securePass } else { New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires }
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          "RDP_USERNAME=RDP" >> $env:GITHUB_ENV
-          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-      - name: Install Only 3 Apps - Chrome, GoLogin, AdsPower
-        shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Write-Host "Installing Chrome..."
+          # 1. Google Chrome
+          Write-Host "Installing Google Chrome..."
           choco install googlechrome -y --no-progress
 
-          Write-Host "Installing AdsPower..."
-          try { winget install --id=AdsPower.AdsPower -e --accept-source-agreements --accept-package-agreements --silent } catch { Write-Host "AdsPower winget failed" }
+          if (-not (Test-Path "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe")) {
+            throw "Chrome installation verification failed"
+          }
 
-          Write-Host "Downloading GoLogin to Desktop..."
-          $desktop = [Environment]::GetFolderPath("Desktop")
-          Invoke-WebRequest -Uri "https://dl.gologin.com/gologin.exe" -OutFile "$desktop\GoLogin.exe" -UseBasicParsing
+          Write-Host "Chrome installed successfully."
+
+          # 2. GoLogin
           Write-Host "Installing GoLogin..."
-          Start-Process "$desktop\GoLogin.exe" -ArgumentList "/S" -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 25
-          Write-Host "Done"
+          $goPath = "$env:TEMP\GoLogin-Setup.exe"
 
-      - name: Clean Desktop - Remove Fazool Software Shortcuts
-        shell: pwsh
-        run: |
-          $desktop = [Environment]::GetFolderPath("Desktop")
-          $publicDesktop = "$env:PUBLIC\Desktop"
+          Invoke-WebRequest `
+            -Uri "https://dl.gologin.com/gologin.exe" `
+            -OutFile $goPath
 
-          # Fazool icons delete karo
-          Get-ChildItem "$desktop\*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Unity|Firefox|Edge|R 4|Visual Studio|Git|PowerShell" } | Remove-Item -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "$publicDesktop\*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Unity|Firefox|Edge|R 4|Visual Studio|Git|PowerShell" } | Remove-Item -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path $goPath)) {
+            throw "GoLogin installer download failed"
+          }
 
-          # Unity Hub, Firefox, R ko uninstall karne ki koshish
-          winget uninstall --id=Unity.UnityHub -e --silent --accept-source-agreements --accept-package-agreements -ErrorAction SilentlyContinue
-          winget uninstall --id=Mozilla.Firefox -e --silent --accept-source-agreements --accept-package-agreements -ErrorAction SilentlyContinue
+          $goProcess = Start-Process `
+            -FilePath $goPath `
+            -ArgumentList "/S" `
+            -Wait `
+            -PassThru
 
-          Write-Host "Desktop Cleaned - Sirf Chrome, GoLogin, AdsPower Rahenge"
+          if ($goProcess.ExitCode -ne 0) {
+            throw "GoLogin installation failed. Exit code: $($goProcess.ExitCode)"
+          }
 
-      - name: Install Tailscale
-        shell: pwsh
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile "$env:TEMP\tailscale.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\tailscale.msi`"", "/quiet", "/norestart" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) { $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep -Seconds 3; $retries++ }
-          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "GoLogin installer completed."
 
-      - name: Maintain Connection
-        shell: pwsh
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $env:RDP_PASSWORD"
-          Write-Host "==================`n"
-          while ($true) { Write-Host "[$(Get-Date)] RDP Active"; Start-Sleep -Seconds 300 }
+          # 3. AdsPower
+          Write-Host "Installing AdsPower..."
+
+          $adsScript = "https://www.adspower.net/install.ps1"
+
+          Invoke-RestMethod -Uri $adsScript | Invoke-Expression
+
+          Write-Host "AdsPower installation command completed."
+
+          Write-Host "All three installation steps completed."
